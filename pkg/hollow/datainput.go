@@ -13,6 +13,12 @@ func readBigEndian(r io.Reader, v any) error {
 	return binary.Read(r, binary.BigEndian, v)
 }
 
+// readFull reads exactly len(buf) bytes into buf.
+func readFull(r io.Reader, buf []byte) error {
+	_, err := io.ReadFull(r, buf)
+	return err
+}
+
 // readUTF reads a string encoded in Java's "modified UTF-8" format, matching
 // java.io.DataInputStream#readUTF: a big-endian uint16 byte-length prefix
 // (not a character count), followed by that many modified-UTF-8 bytes.

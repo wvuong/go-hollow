@@ -35,6 +35,32 @@ func readVInt(r io.ByteReader) (int32, error) {
 	return value, nil
 }
 
+// readVIntFromBytes decodes a VarInt from data starting at pos, matching
+// com.netflix.hollow.core.memory.encoding.VarInt#readVInt(byte[], int). It
+// returns the decoded value and the position of the next unread byte.
+func readVIntFromBytes(data []byte, pos int) (value int32, nextPos int, err error) {
+	if pos >= len(data) {
+		return 0, 0, io.ErrUnexpectedEOF
+	}
+	b := data[pos]
+	pos++
+	if b == 0x80 {
+		return 0, 0, ErrNullVarInt
+	}
+
+	value = int32(b & 0x7F)
+	for b&0x80 != 0 {
+		if pos >= len(data) {
+			return 0, 0, io.ErrUnexpectedEOF
+		}
+		b = data[pos]
+		pos++
+		value = (value << 7) | int32(b&0x7F)
+	}
+
+	return value, pos, nil
+}
+
 // readVLong reads a Hollow-encoded variable-length long, matching
 // com.netflix.hollow.core.memory.encoding.VarInt#readVLong.
 func readVLong(r io.ByteReader) (int64, error) {
