@@ -22,6 +22,24 @@ func getElementValue(words []uint64, bitIndex int64, bitsPerElement int) uint64 
 	return value & mask
 }
 
+// setElementValue writes a bitsPerElement-wide value at the given bit index
+// into a packed array of 64-bit words, matching Java's
+// FixedLengthElementArray#setElementValue. words must be zeroed at those
+// bits beforehand (this only ORs bits in, matching the Java reference,
+// which relies on a freshly-allocated all-zero array and never overwrites a
+// value once set).
+func setElementValue(words []uint64, bitIndex int64, bitsPerElement int, value uint64) {
+	whichWord := bitIndex >> 6
+	whichBit := uint(bitIndex & 63)
+
+	words[whichWord] |= value << whichBit
+
+	bitsRemaining := 64 - whichBit
+	if uint(bitsPerElement) > bitsRemaining {
+		words[whichWord+1] |= value >> bitsRemaining
+	}
+}
+
 // nullValueForBits mirrors HollowObjectTypeDataElements's nullValueForField:
 // the reserved all-ones sentinel for a field of the given bit width.
 func nullValueForBits(bits int) uint64 {

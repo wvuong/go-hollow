@@ -69,6 +69,18 @@ func readSetShardData(r byteReader) (*setShardData, error) {
 		return nil, fmt.Errorf("reading max ordinal: %w", err)
 	}
 
+	shard, err := readSetShardFieldsAndData(r)
+	if err != nil {
+		return nil, err
+	}
+	shard.maxOrdinal = maxOrdinal
+	return shard, nil
+}
+
+// readSetShardFieldsAndData reads the part of a shard's data that follows
+// its max ordinal (snapshot) or removals/additions (delta) — identical
+// between the two, matching HollowSetTypeDataElements#readFromInput.
+func readSetShardFieldsAndData(r byteReader) (*setShardData, error) {
 	bitsPerSetPointer, err := readVInt(r)
 	if err != nil {
 		return nil, fmt.Errorf("reading bits-per-set-pointer: %w", err)
@@ -95,7 +107,6 @@ func readSetShardData(r byteReader) (*setShardData, error) {
 	}
 
 	return &setShardData{
-		maxOrdinal:                   maxOrdinal,
 		bitsPerSetPointer:            int(bitsPerSetPointer),
 		bitsPerSetSizeValue:          int(bitsPerSetSizeValue),
 		bitsPerElement:               int(bitsPerElement),
@@ -125,12 +136,35 @@ func (s *setShardData) endBucket(shardOrdinal int32) int64 {
 	return int64(getElementValue(s.setPointerAndSizeData, int64(shardOrdinal)*int64(s.bitsPerFixedLengthSetPortion), s.bitsPerSetPointer))
 }
 
+// size returns the number of elements in the set at shardOrdinal, matching
+// HollowSetTypeReadStateShard#size.
+func (s *setShardData) size(shardOrdinal int32) int {
+	bitOffset := int64(shardOrdinal)*int64(s.bitsPerFixedLengthSetPortion) + int64(s.bitsPerSetPointer)
+	return int(getElementValue(s.setPointerAndSizeData, bitOffset, s.bitsPerSetSizeValue))
+}
+
+// elements returns every element ordinal in the set at shardOrdinal, in
+// unspecified (hash-bucket) order, matching a full-table walk of
+// HollowSetTypeDataElements's bucket range skipping empty buckets.
+func (s *setShardData) elements(shardOrdinal int32) []int32 {
+	start := s.startBucket(shardOrdinal)
+	end := s.endBucket(shardOrdinal)
+
+	result := make([]int32, 0, end-start)
+	for bucket := start; bucket < end; bucket++ {
+		v := getElementValue(s.elementData, bucket*int64(s.bitsPerElement), s.bitsPerElement)
+		if v != s.emptyBucketValue {
+			result = append(result, int32(v))
+		}
+	}
+	return result
+}
+
 // Size returns the number of elements in the set at ordinal, matching
 // HollowSetTypeReadStateShard#size.
 func (d *SetTypeData) Size(ordinal int32) int {
 	shard, shardOrdinal := d.shardFor(ordinal)
-	bitOffset := int64(shardOrdinal)*int64(shard.bitsPerFixedLengthSetPortion) + int64(shard.bitsPerSetPointer)
-	return int(getElementValue(shard.setPointerAndSizeData, bitOffset, shard.bitsPerSetSizeValue))
+	return shard.size(shardOrdinal)
 }
 
 // Elements returns every element ordinal in the set at ordinal, in
@@ -138,15 +172,5 @@ func (d *SetTypeData) Size(ordinal int32) int {
 // HollowSetTypeDataElements's bucket range skipping empty buckets.
 func (d *SetTypeData) Elements(ordinal int32) []int32 {
 	shard, shardOrdinal := d.shardFor(ordinal)
-	start := shard.startBucket(shardOrdinal)
-	end := shard.endBucket(shardOrdinal)
-
-	result := make([]int32, 0, end-start)
-	for bucket := start; bucket < end; bucket++ {
-		v := getElementValue(shard.elementData, bucket*int64(shard.bitsPerElement), shard.bitsPerElement)
-		if v != shard.emptyBucketValue {
-			result = append(result, int32(v))
-		}
-	}
-	return result
+	return shard.elements(shardOrdinal)
 }

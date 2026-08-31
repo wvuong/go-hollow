@@ -30,6 +30,21 @@ func (p *PopulatedOrdinals) Count() int {
 	return count
 }
 
+// newPopulatedOrdinals allocates an empty (all-unpopulated) bitset sized to
+// hold ordinals up to maxOrdinal, for building up during delta application
+// (there's no wire-encoded bitset for deltas — see readTypeStateDelta).
+func newPopulatedOrdinals(maxOrdinal int32) *PopulatedOrdinals {
+	if maxOrdinal < 0 {
+		return &PopulatedOrdinals{}
+	}
+	return &PopulatedOrdinals{words: make([]uint64, maxOrdinal/64+1)}
+}
+
+// set marks ordinal as populated.
+func (p *PopulatedOrdinals) set(ordinal int32) {
+	p.words[ordinal/64] |= uint64(1) << uint(ordinal%64)
+}
+
 // readPopulatedOrdinals reads the populated-ordinals bitset that follows a
 // type's shard data in a snapshot, matching
 // SnapshotPopulatedOrdinalsReader#readOrdinals.

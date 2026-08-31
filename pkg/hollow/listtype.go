@@ -66,6 +66,18 @@ func readListShardData(r byteReader) (*listShardData, error) {
 		return nil, fmt.Errorf("reading max ordinal: %w", err)
 	}
 
+	shard, err := readListShardFieldsAndData(r)
+	if err != nil {
+		return nil, err
+	}
+	shard.maxOrdinal = maxOrdinal
+	return shard, nil
+}
+
+// readListShardFieldsAndData reads the part of a shard's data that follows
+// its max ordinal (snapshot) or removals/additions (delta) — identical
+// between the two, matching HollowListTypeDataElements#readFromInput.
+func readListShardFieldsAndData(r byteReader) (*listShardData, error) {
 	bitsPerListPointer, err := readVInt(r)
 	if err != nil {
 		return nil, fmt.Errorf("reading bits-per-list-pointer: %w", err)
@@ -88,7 +100,6 @@ func readListShardData(r byteReader) (*listShardData, error) {
 	}
 
 	return &listShardData{
-		maxOrdinal:         maxOrdinal,
 		bitsPerListPointer: int(bitsPerListPointer),
 		bitsPerElement:     int(bitsPerElement),
 		listPointerData:    listPointerData,
@@ -115,10 +126,41 @@ func (s *listShardData) endElement(shardOrdinal int32) int64 {
 	return int64(getElementValue(s.listPointerData, int64(shardOrdinal)*int64(s.bitsPerListPointer), s.bitsPerListPointer))
 }
 
+// size returns the number of elements in the list at shardOrdinal.
+func (s *listShardData) size(shardOrdinal int32) int {
+	return int(s.endElement(shardOrdinal) - s.startElement(shardOrdinal))
+}
+
+// element reads the element ordinal at the given index within the list at
+// shardOrdinal, matching HollowListTypeReadStateShard#getElementOrdinal. ok
+// is false if index is out of range.
+func (s *listShardData) element(shardOrdinal int32, index int) (elementOrdinal int32, ok bool) {
+	start := s.startElement(shardOrdinal)
+	end := s.endElement(shardOrdinal)
+
+	elementIndex := start + int64(index)
+	if elementIndex < 0 || elementIndex >= end {
+		return 0, false
+	}
+
+	v := getElementValue(s.elementData, elementIndex*int64(s.bitsPerElement), s.bitsPerElement)
+	return int32(v), true
+}
+
+// elements returns every element ordinal in the list at shardOrdinal, in order.
+func (s *listShardData) elements(shardOrdinal int32) []int32 {
+	size := s.size(shardOrdinal)
+	result := make([]int32, size)
+	for i := 0; i < size; i++ {
+		result[i], _ = s.element(shardOrdinal, i)
+	}
+	return result
+}
+
 // Size returns the number of elements in the list at ordinal.
 func (d *ListTypeData) Size(ordinal int32) int {
 	shard, shardOrdinal := d.shardFor(ordinal)
-	return int(shard.endElement(shardOrdinal) - shard.startElement(shardOrdinal))
+	return shard.size(shardOrdinal)
 }
 
 // Element reads the element ordinal at the given index within the list at
@@ -126,24 +168,11 @@ func (d *ListTypeData) Size(ordinal int32) int {
 // false if index is out of range.
 func (d *ListTypeData) Element(ordinal int32, index int) (elementOrdinal int32, ok bool) {
 	shard, shardOrdinal := d.shardFor(ordinal)
-	start := shard.startElement(shardOrdinal)
-	end := shard.endElement(shardOrdinal)
-
-	elementIndex := start + int64(index)
-	if elementIndex < 0 || elementIndex >= end {
-		return 0, false
-	}
-
-	v := getElementValue(shard.elementData, elementIndex*int64(shard.bitsPerElement), shard.bitsPerElement)
-	return int32(v), true
+	return shard.element(shardOrdinal, index)
 }
 
 // Elements returns every element ordinal in the list at ordinal, in order.
 func (d *ListTypeData) Elements(ordinal int32) []int32 {
-	size := d.Size(ordinal)
-	result := make([]int32, size)
-	for i := 0; i < size; i++ {
-		result[i], _ = d.Element(ordinal, i)
-	}
-	return result
+	shard, shardOrdinal := d.shardFor(ordinal)
+	return shard.elements(shardOrdinal)
 }

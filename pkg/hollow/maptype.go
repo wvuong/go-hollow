@@ -77,6 +77,18 @@ func readMapShardData(r byteReader) (*mapShardData, error) {
 		return nil, fmt.Errorf("reading max ordinal: %w", err)
 	}
 
+	shard, err := readMapShardFieldsAndData(r)
+	if err != nil {
+		return nil, err
+	}
+	shard.maxOrdinal = maxOrdinal
+	return shard, nil
+}
+
+// readMapShardFieldsAndData reads the part of a shard's data that follows
+// its max ordinal (snapshot) or removals/additions (delta) — identical
+// between the two, matching HollowMapTypeDataElements#readFromInput.
+func readMapShardFieldsAndData(r byteReader) (*mapShardData, error) {
 	bitsPerMapPointer, err := readVInt(r)
 	if err != nil {
 		return nil, fmt.Errorf("reading bits-per-map-pointer: %w", err)
@@ -107,7 +119,6 @@ func readMapShardData(r byteReader) (*mapShardData, error) {
 	}
 
 	return &mapShardData{
-		maxOrdinal:                   maxOrdinal,
 		bitsPerMapPointer:            int(bitsPerMapPointer),
 		bitsPerMapSizeValue:          int(bitsPerMapSizeValue),
 		bitsPerKeyElement:            int(bitsPerKeyElement),
@@ -139,11 +150,35 @@ func (s *mapShardData) endBucket(shardOrdinal int32) int64 {
 	return int64(getElementValue(s.mapPointerAndSizeData, int64(shardOrdinal)*int64(s.bitsPerFixedLengthMapPortion), s.bitsPerMapPointer))
 }
 
+// size returns the number of entries in the map at shardOrdinal.
+func (s *mapShardData) size(shardOrdinal int32) int {
+	bitOffset := int64(shardOrdinal)*int64(s.bitsPerFixedLengthMapPortion) + int64(s.bitsPerMapPointer)
+	return int(getElementValue(s.mapPointerAndSizeData, bitOffset, s.bitsPerMapSizeValue))
+}
+
+// entries returns every key/value ordinal pair in the map at shardOrdinal,
+// in unspecified (hash-bucket) order, matching a full-table walk of
+// HollowMapTypeDataElements's bucket range skipping empty buckets.
+func (s *mapShardData) entries(shardOrdinal int32) []MapEntry {
+	start := s.startBucket(shardOrdinal)
+	end := s.endBucket(shardOrdinal)
+
+	result := make([]MapEntry, 0, end-start)
+	for bucket := start; bucket < end; bucket++ {
+		key := getElementValue(s.entryData, bucket*int64(s.bitsPerMapEntry), s.bitsPerKeyElement)
+		if key == s.emptyBucketKeyValue {
+			continue
+		}
+		value := getElementValue(s.entryData, bucket*int64(s.bitsPerMapEntry)+int64(s.bitsPerKeyElement), s.bitsPerValueElement)
+		result = append(result, MapEntry{Key: int32(key), Value: int32(value)})
+	}
+	return result
+}
+
 // Size returns the number of entries in the map at ordinal.
 func (d *MapTypeData) Size(ordinal int32) int {
 	shard, shardOrdinal := d.shardFor(ordinal)
-	bitOffset := int64(shardOrdinal)*int64(shard.bitsPerFixedLengthMapPortion) + int64(shard.bitsPerMapPointer)
-	return int(getElementValue(shard.mapPointerAndSizeData, bitOffset, shard.bitsPerMapSizeValue))
+	return shard.size(shardOrdinal)
 }
 
 // Entries returns every key/value ordinal pair in the map at ordinal, in
@@ -151,17 +186,5 @@ func (d *MapTypeData) Size(ordinal int32) int {
 // HollowMapTypeDataElements's bucket range skipping empty buckets.
 func (d *MapTypeData) Entries(ordinal int32) []MapEntry {
 	shard, shardOrdinal := d.shardFor(ordinal)
-	start := shard.startBucket(shardOrdinal)
-	end := shard.endBucket(shardOrdinal)
-
-	result := make([]MapEntry, 0, end-start)
-	for bucket := start; bucket < end; bucket++ {
-		key := getElementValue(shard.entryData, bucket*int64(shard.bitsPerMapEntry), shard.bitsPerKeyElement)
-		if key == shard.emptyBucketKeyValue {
-			continue
-		}
-		value := getElementValue(shard.entryData, bucket*int64(shard.bitsPerMapEntry)+int64(shard.bitsPerKeyElement), shard.bitsPerValueElement)
-		result = append(result, MapEntry{Key: int32(key), Value: int32(value)})
-	}
-	return result
+	return shard.entries(shardOrdinal)
 }

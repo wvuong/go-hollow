@@ -72,9 +72,20 @@ func readObjectShardData(r byteReader, schema *ObjectSchema) (*objectShardData, 
 		return nil, fmt.Errorf("reading max ordinal: %w", err)
 	}
 
-	numFields := len(schema.Fields)
+	shard, err := readObjectShardFieldsAndData(r, len(schema.Fields))
+	if err != nil {
+		return nil, err
+	}
+	shard.maxOrdinal = maxOrdinal
+	return shard, nil
+}
+
+// readObjectShardFieldsAndData reads the bits-per-field statistics,
+// fixed-length data, and var-length data that follow a shard's max ordinal
+// (snapshot) or removals/additions (delta) — the part of
+// HollowObjectTypeDataElements#readFromInput that's identical for both.
+func readObjectShardFieldsAndData(r byteReader, numFields int) (*objectShardData, error) {
 	shard := &objectShardData{
-		maxOrdinal:        maxOrdinal,
 		bitsPerField:      make([]int, numFields),
 		bitOffsetPerField: make([]int, numFields),
 		nullValueForField: make([]uint64, numFields),
@@ -94,6 +105,7 @@ func readObjectShardData(r byteReader, schema *ObjectSchema) (*objectShardData, 
 	}
 	shard.bitsPerRecord = bitOffset
 
+	var err error
 	shard.fixedLengthData, err = readFixedLengthData(r)
 	if err != nil {
 		return nil, fmt.Errorf("reading fixed-length data: %w", err)
@@ -199,12 +211,11 @@ func (d *ObjectTypeData) GetReference(ordinal int32, fieldIndex int) (refOrdinal
 // field's bytes within varLengthData[fieldIndex], matching the startByte/
 // endByte computation shared by HollowObjectTypeReadState#readString and
 // #readBytes.
-func (d *ObjectTypeData) varLengthRange(ordinal int32, fieldIndex int) (start, end int64, isNull bool) {
-	shard, shardOrdinal := d.shardFor(ordinal)
-	numBits := shard.bitsPerField[fieldIndex]
-	bitOffset := shard.fieldOffset(shardOrdinal, fieldIndex)
+func (s *objectShardData) varLengthRange(shardOrdinal int32, fieldIndex int) (start, end int64, isNull bool) {
+	numBits := s.bitsPerField[fieldIndex]
+	bitOffset := s.fieldOffset(shardOrdinal, fieldIndex)
 
-	endRaw := getElementValue(shard.fixedLengthData, bitOffset, numBits)
+	endRaw := getElementValue(s.fixedLengthData, bitOffset, numBits)
 	nullBit := uint64(1) << uint(numBits-1)
 	if endRaw&nullBit != 0 {
 		return 0, 0, true
@@ -212,7 +223,7 @@ func (d *ObjectTypeData) varLengthRange(ordinal int32, fieldIndex int) (start, e
 
 	var startRaw uint64
 	if shardOrdinal != 0 {
-		startRaw = getElementValue(shard.fixedLengthData, bitOffset-int64(shard.bitsPerRecord), numBits)
+		startRaw = getElementValue(s.fixedLengthData, bitOffset-int64(s.bitsPerRecord), numBits)
 	}
 	startRaw &= nullBit - 1
 
@@ -221,11 +232,11 @@ func (d *ObjectTypeData) varLengthRange(ordinal int32, fieldIndex int) (start, e
 
 // GetBytes reads a BYTES field, matching HollowObjectTypeReadState#readBytes.
 func (d *ObjectTypeData) GetBytes(ordinal int32, fieldIndex int) ([]byte, bool) {
-	start, end, isNull := d.varLengthRange(ordinal, fieldIndex)
+	shard, shardOrdinal := d.shardFor(ordinal)
+	start, end, isNull := shard.varLengthRange(shardOrdinal, fieldIndex)
 	if isNull {
 		return nil, false
 	}
-	shard, _ := d.shardFor(ordinal)
 	return shard.varLengthData[fieldIndex][start:end], true
 }
 
@@ -234,11 +245,11 @@ func (d *ObjectTypeData) GetBytes(ordinal int32, fieldIndex int) ([]byte, bool) 
 // UTF-16 code unit (not UTF-8 bytes), so surrogate pairs must be reassembled
 // via unicode/utf16.
 func (d *ObjectTypeData) GetString(ordinal int32, fieldIndex int) (string, bool) {
-	start, end, isNull := d.varLengthRange(ordinal, fieldIndex)
+	shard, shardOrdinal := d.shardFor(ordinal)
+	start, end, isNull := shard.varLengthRange(shardOrdinal, fieldIndex)
 	if isNull {
 		return "", false
 	}
-	shard, _ := d.shardFor(ordinal)
 	data := shard.varLengthData[fieldIndex][start:end]
 
 	units := make([]uint16, 0, len(data))
