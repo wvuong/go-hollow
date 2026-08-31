@@ -10,12 +10,11 @@ type TypeState struct {
 	MaxOrdinal int32
 	Populated  *PopulatedOrdinals
 
-	// Object holds fully decoded records when Schema is an *ObjectSchema.
+	// Exactly one of the following is set, matching Schema's concrete type.
 	Object *ObjectTypeData
-	// Collection holds shard/size metadata when Schema is a *ListSchema,
-	// *SetSchema, or *MapSchema — see CollectionSummary for what's not yet
-	// decoded.
-	Collection *CollectionSummary
+	List   *ListTypeData
+	Set    *SetTypeData
+	Map    *MapTypeData
 }
 
 // Blob is a fully parsed Hollow snapshot blob: its header plus every
@@ -72,26 +71,26 @@ func readTypeStateSnapshot(r byteReader) (*TypeState, error) {
 		typeState.Object = data
 		typeState.MaxOrdinal = data.MaxOrdinal
 	case *ListSchema:
-		summary, err := readAndDiscardCollectionTypeData(r, SchemaTypeList, numShards)
+		data, err := readListTypeData(r, s, numShards)
 		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", schema.Name(), err)
+			return nil, err
 		}
-		typeState.Collection = summary
-		typeState.MaxOrdinal = summary.MaxOrdinal
+		typeState.List = data
+		typeState.MaxOrdinal = data.MaxOrdinal
 	case *SetSchema:
-		summary, err := readAndDiscardCollectionTypeData(r, SchemaTypeSet, numShards)
+		data, err := readSetTypeData(r, s, numShards)
 		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", schema.Name(), err)
+			return nil, err
 		}
-		typeState.Collection = summary
-		typeState.MaxOrdinal = summary.MaxOrdinal
+		typeState.Set = data
+		typeState.MaxOrdinal = data.MaxOrdinal
 	case *MapSchema:
-		summary, err := readAndDiscardCollectionTypeData(r, SchemaTypeMap, numShards)
+		data, err := readMapTypeData(r, s, numShards)
 		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", schema.Name(), err)
+			return nil, err
 		}
-		typeState.Collection = summary
-		typeState.MaxOrdinal = summary.MaxOrdinal
+		typeState.Map = data
+		typeState.MaxOrdinal = data.MaxOrdinal
 	default:
 		return nil, fmt.Errorf("unhandled schema type %v for %s", schema.SchemaType(), schema.Name())
 	}

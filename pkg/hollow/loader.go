@@ -42,9 +42,52 @@ func Loader(path string) {
 		fmt.Printf("  %s %s (shards=%d maxOrdinal=%d populated=%d)\n",
 			t.Schema.SchemaType(), t.Schema.Name(), t.NumShards, t.MaxOrdinal, t.Populated.Count())
 
-		if t.Object != nil {
+		switch {
+		case t.Object != nil:
 			printSampleRecords(t, byName)
+		case t.List != nil:
+			printSampleLists(t)
+		case t.Set != nil:
+			printSampleSets(t)
+		case t.Map != nil:
+			printSampleMaps(t)
 		}
+	}
+}
+
+// printSampleLists prints up to 3 decoded lists' element ordinals.
+func printSampleLists(t *TypeState) {
+	printed := 0
+	for ordinal := int32(0); ordinal <= t.MaxOrdinal && printed < 3; ordinal++ {
+		if !t.Populated.IsPopulated(ordinal) {
+			continue
+		}
+		fmt.Printf("    [%d] %s %v\n", ordinal, t.List.Schema.ElementType, t.List.Elements(ordinal))
+		printed++
+	}
+}
+
+// printSampleSets prints up to 3 decoded sets' element ordinals.
+func printSampleSets(t *TypeState) {
+	printed := 0
+	for ordinal := int32(0); ordinal <= t.MaxOrdinal && printed < 3; ordinal++ {
+		if !t.Populated.IsPopulated(ordinal) {
+			continue
+		}
+		fmt.Printf("    [%d] %s %v\n", ordinal, t.Set.Schema.ElementType, t.Set.Elements(ordinal))
+		printed++
+	}
+}
+
+// printSampleMaps prints up to 3 decoded maps' key/value ordinal pairs.
+func printSampleMaps(t *TypeState) {
+	printed := 0
+	for ordinal := int32(0); ordinal <= t.MaxOrdinal && printed < 3; ordinal++ {
+		if !t.Populated.IsPopulated(ordinal) {
+			continue
+		}
+		fmt.Printf("    [%d] %s->%s%v\n", ordinal, t.Map.Schema.KeyType, t.Map.Schema.ValueType, t.Map.Entries(ordinal))
+		printed++
 	}
 }
 
@@ -118,14 +161,28 @@ func formatRecord(data *ObjectTypeData, schema *ObjectSchema, ordinal int32, byN
 				out += "null"
 				break
 			}
-			if referenced, isString := byName[field.ReferencedType]; isString && referenced.Object != nil && field.ReferencedType == "String" {
-				if v, ok := referenced.Object.GetString(refOrdinal, 0); ok {
-					out += fmt.Sprintf("%s(%d)=%q", field.ReferencedType, refOrdinal, v)
-					break
-				}
-			}
-			out += fmt.Sprintf("%s(%d)", field.ReferencedType, refOrdinal)
+			referenced := byName[field.ReferencedType]
+			out += formatReference(field.ReferencedType, refOrdinal, referenced)
 		}
 	}
 	return out + "}"
+}
+
+// formatReference renders a REFERENCE field's target: a String's value, a
+// collection's size, or just its type and ordinal.
+func formatReference(typeName string, refOrdinal int32, referenced *TypeState) string {
+	switch {
+	case referenced == nil:
+	case typeName == "String" && referenced.Object != nil:
+		if v, ok := referenced.Object.GetString(refOrdinal, 0); ok {
+			return fmt.Sprintf("%s(%d)=%q", typeName, refOrdinal, v)
+		}
+	case referenced.List != nil:
+		return fmt.Sprintf("%s(%d)[%d items]", typeName, refOrdinal, referenced.List.Size(refOrdinal))
+	case referenced.Set != nil:
+		return fmt.Sprintf("%s(%d)[%d items]", typeName, refOrdinal, referenced.Set.Size(refOrdinal))
+	case referenced.Map != nil:
+		return fmt.Sprintf("%s(%d)[%d items]", typeName, refOrdinal, referenced.Map.Size(refOrdinal))
+	}
+	return fmt.Sprintf("%s(%d)", typeName, refOrdinal)
 }
